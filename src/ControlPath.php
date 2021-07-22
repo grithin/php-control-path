@@ -107,7 +107,10 @@ class ControlPath {
 		$flow = $this->start($path, $options);
 		$returns = [];
 		while($flow->has_next()){
-			$returns = array_merge($returns, $flow->next());
+			$result = $flow->next();
+			if($result !== true && $result !== false){
+				$returns[] = $result;
+			}
 		}
 		return $returns;
 	}

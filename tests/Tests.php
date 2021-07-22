@@ -12,7 +12,7 @@ class bob{}
 
 
 # toggle to silence ppe and pp during debugging
-GlobalFunctions::$silence = true;
+# GlobalFunctions::$silence = true;
 
 
 class Tests extends TestCase{
@@ -28,6 +28,7 @@ class Tests extends TestCase{
 
 	}
 	function test_basic(){
+
 		$cp = new ControlPath(__DIR__.'/test_files/app1/');
 
 		# section + index
@@ -68,10 +69,8 @@ class Tests extends TestCase{
 		$this->assertEquals(['bob','bill','moe'], $result);
 
 		# have a section inbetween without a controller
-		GlobalFunctions::$silence = false;
 		$result = $cp->load('/section1/section2/section3/');
 		$this->assertEquals(['bob','bill','dan', 'section index'], $result);
-		GlobalFunctions::$silence = true;
 	}
 
 	function test_namespace(){
@@ -123,6 +122,11 @@ class Tests extends TestCase{
 		# prevent page within section
 		$result = $cp->load('/section1/page2');
 		$this->assertEquals(['bob', 'moe'], $result);
+
+		# stop by false
+		$result = $cp->load('/section2/section3/page');
+		$this->assertEquals(['bob'], $result);
+
 	}
 	function test_visibility(){
 		$cp = new ControlPath(__DIR__.'/test_files/app4/', null, ['namespace'=>'App4']);
@@ -161,9 +165,14 @@ class Tests extends TestCase{
 
 		$got = $sl->get(ControlPath::class);
 		$this->assertEquals('bob', $got->bob);
-
 	}
 
+	function test_share(){
+		$sl = new ServiceLocator();
+		$cp = new ControlPath(__DIR__.'/test_files/app4/', $sl, ['namespace'=>'App4']);
+		$result = $cp->load('/page11');
+		$this->assertEquals(['bob','bob'], $result);
+	}
 
 
 

@@ -6,7 +6,9 @@ The router I previously built would load control files parallel to a requested u
 -	variable injection was limited to a preset array
 -	could not bundle multiple pages into a single controller class which might have utility methods for the pages and a __construct
 
-So, I resolved to have the best of both worlds and made this tool.  It is fairly complex.  The router that preceded it was complex, and this is more complex.  But, it is testable and has unit tests.
+I also considered that standard Controller class paradigm had [downsides](#controller-class-downsides).
+
+So, I resolved to have the best of both worlds and made this tool.
 
 
 ## What
@@ -24,21 +26,20 @@ How to interpret these returns is up to the application.  For instance, the cont
 
 Let's look at an example.
 
-`/section1/page`
--	load `/Controller.php`
--	`$Controller = new Controller()`
--	`$Controller->_always()`
--	load `/section1/Controller.php`
--	`$Controller = new section1\Controller()`
--	`$Controller->_always()`
--	load `page.php`
+With a path of `/section1/page`, the steps a flow goes through `while($Flow->next() !== false)` are:
+1.	.
+	-	load `/Controller.php`
+	-	`$Controller = new Controller()`
+	-	`$Controller->_always()`
+2.	.
+	-	load `/section1/Controller.php`
+	-	`$Controller = new section1\Controller()`
+	-	`$Controller->_always()`
+3.	.
+	-	load `page.php`
 
 
-![Load](about/Load.png?raw=true "Load")
 
-And this results in:
-
-![returns](about/returns.png?raw=true "returns")
 
 ## Section Control
 
@@ -78,9 +79,9 @@ The page itself can just do stuff.  It can still return something - like the out
 
 ## Injection
 The methods, closures, and __constructs have normal dependency injection.  Additionally, some parameters are injected based on the name of the parameter.  The named injections are based on the `inject` option.  Two variables are always injected:
--	`Flow` the current control path flow
+-	`Flow` the current Flow instance
 -	`control` and ArrayObject used for sharing data between controls
--	`ControlPath` the current instance of control path
+-	`ControlPath` the current ControlPath instance
 
 You can have these injected just by name:
 
@@ -93,13 +94,13 @@ return function($ControlPath){}
 
 
 ## Sharing
-It is intended that section controls and page control may want to share data.  To enable this, the `$control` variable, which is an ArrayObject, is injected.  This can also be used to capture methods within a Controller class.
+It is intended that section controls and page control may want to share data.  To enable this, the `$share` variable, which is an ArrayObject, is injected.  This can also be used to capture methods within a Controller class.
 
 Controller.php
 ```php
 class Controller{
-	function __construct($control){
-		$control->do_x = function(){
+	function __construct($share){
+		$share->do_x = function(){
 			$this->do_x();
 		};
 	}
@@ -110,7 +111,7 @@ class Controller{
 ```
 page.php
 ```php
-($control->do_x)();
+($share->do_x)();
 ```
 
 
@@ -123,10 +124,11 @@ If necessary, the previous Controller classes can be access with `$Flow->control
 
 ## Stopping Control Flow
 There are a few ways to stop control flow:
-1.	call $Flow->stop()
-2.	throw exception
+1. return false from a control
+2.	call $Flow->stop()
+3.	throw exception
 
-Where #1 occurs can be in multiple places.  Since `$Flow` is injected:
+Where #2 occurs can be in multiple places.  Since `$Flow` is injected:
 -	within a section __construct
 -	within a section _always
 -	within a page control file
@@ -152,7 +154,7 @@ $ControlPath->load('/section1/page', ['return_handler'=>$return_handler]);
 ```
 
 
-![return_handler](about/return_handler.png?raw=true "return_handler")
+
 
 ## Conforming Path Tokens
 Since path characters can diverge from what is allowable as a namespace or class, the token parts of the path are converted using ControlPath::token_to_class.
@@ -186,9 +188,12 @@ In the end, I decided not to clone ServiceLocater.  ControlPath can be injected 
 ### Why is Route Middleware Deficient?
 Generally, there are complexities that apply to specific paths that would make the abstraction into front/middle ware both unnecessarily disconnected and would result in unnecessarily complex general middleware or route specific frone/middle ware.  One off frontwares, indicated by path, fit perfectly for these path specific complexities, to be loaded as section controls.  And example might be some series of complex permission checks which would not fit in a Auth middleware configuration parameter.
 
-### Problems With Single Controller files
-Giant methods or manied methods lead to giant, unmanageable controller files.
-
+### Controller Class Downsides
+-	Giant methods or manied methods lead to giant, unmanageable controller files.
+	-	large control pages would have to fit inside a Controller class, making the class large
+	-	buried pages
+	-	page methods in no definite order
+-	Page syntax error causes section failure
 
 ### Why Not Controller As Api?
 APIs + response handlers are good for handling standards.  But, a controller can output anything, and sometimes a large variance from a standard is necessary.

@@ -3,6 +3,11 @@ namespace Grithin\ControlPath;
 
 
 class Flow{
+	const STAGE_SECTION = 1;
+	const STAGE_PAGE = 2;
+	const STAGE_END = 4;
+	private $stage; #< the current stage
+
 	public $return_handler;
 
 	public $inject = []; #< inject to inject into control files
@@ -10,8 +15,9 @@ class Flow{
 
 	public $tokens_unparsed = [];
 	public $tokens_parsed = [];
-	public $token_current;
+	public $current_token;
 	public $current_path;
+	public $path_class_prefix;
 	public $stop = false;
 
 	public $controllers = []; #< controller classes that have been instantiated during load, reset each time
@@ -21,6 +27,7 @@ class Flow{
 	 */
 	function __construct($ControlPath, $path, $options=[]){
 		$this->cp = $ControlPath;
+		$this->stage = self::STAGE_SECTION;
 
 
 		#+ handle injection options {
@@ -31,7 +38,7 @@ class Flow{
 			}
 			$this->inject = $options['inject'];
 		}
-		$this->inject['control'] = new \ArrayObject;
+		$this->inject['share'] = new \ArrayObject;
 		$this->inject['Flow'] = $this;
 		# merge ControlPath injections
 		$this->inject = array_merge($this->cp->inject, $this->inject);
@@ -47,74 +54,103 @@ class Flow{
 		}
 
 		$this->tokens_unparsed = explode('/', $path);
-
 		$this->forward();
 
 	}
 
 	/** return current token */
-	public function current(){
-		return $this->token_current;
+	public function current_token(){
+		return $this->current_token;
 	}
 	public function current_path(){
 		return $this->current_path;
 	}
-	public function has_next(){
-		return !$this->stop;
+	public function stop(){
+		$this->stage = self::STAGE_END;
 	}
-	public function is_last(){
-		return (bool)$this->tokens_unparsed;
+	public function has_next(){
+		return $this->stage !== self::STAGE_END;
 	}
 	/** move on to the next token */
 	public function forward(){
-		if($this->token_current){
-			$this->tokens_parsed[] = $this->token_current;
-		}
-		if($this->stop){
+		if(!$this->has_next()){
 			return false;
 		}
 		if(!$this->tokens_unparsed){
-			$this->stop = true;
+			if($this->stage === self::STAGE_SECTION){
+				$this->stage = self::STAGE_PAGE;
+				return $this->current_path;
+			}else{
+				$this->stage = self::STAGE_END;
+			}
 			return false;
 		}
+		if($this->current_token){
+			$this->tokens_parsed[] = $this->current_token;
+		}
 
-		$this->token_current = array_shift($this->tokens_unparsed);
-		$this->token_current = $this->token_current ?: 'index';
+		$this->current_token = array_shift($this->tokens_unparsed);
+		$this->current_token = $this->current_token ?: 'index';
 		$this->current_path = $this->cp->current_path_build($this->tokens_parsed);
+		$this->current_relative_path = implode('/',$this->tokens_parsed);
+		$this->path_class_prefix = $this->cp->path_class_prefix($this->tokens_parsed);
 		return $this->current_path;
 	}
 
-	public function stop(){
-		$this->stop = true;
-	}
 	public function handle_return($return){
-		if($return && $return !== 1){
-			$this->returns[$this->current_path][] = $return;
+		/*
+		If control returned false, this is stop indication
+		*/
+		if($return === false){
+			$this->stop();
+			return false;
+		}
+		/*
+		if control returned null, function had no return
+		if control returned 1, this is php return value for
+		successful file load
+		*/
+		if($return !== null && $return !== 1){
 			if($this->return_handler){
 				($this->return_handler)($return, $this, $this->cp);
 			}
+			return $return;
+		}
+		return true;
+	}
+
+	/** step through either section or page control */
+	public function next(){
+		if($this->stage === self::STAGE_SECTION){
+			return $this->section();
+		}elseif($this->stage === self::STAGE_PAGE){
+			return $this->page();
+		}else{
+			return false;
 		}
 	}
 
-
-
-	public function next(){
-		if($this->stop){
+	/** return
+	<= true ><?: success, but no control return >
+	||
+	<= false ><?: flow has stopped >
+	||
+	< return value of control >
+	*/
+	public function section(){
+		if($this->stage !== self::STAGE_SECTION){
 			return false;
 		}
-		$this->returns[$this->current_path] = [];
-
-		$path_class_prefix = $this->cp->path_class_prefix($this->tokens_parsed);
-		$conformed_token = $this->cp->token_to_class($this->token_current);
-		$page_class = $path_class_prefix.$conformed_token;
-
-
-
+		$return = $this->section_load();
+		$this->forward();
+		return $return;
+	}
+	protected function section_load(){
 		#+ load Controller.php if present {
 		$Controller = false;
 		$file = $this->current_path.'Controller.php';
 		if(is_file($file)){
-			$class = $path_class_prefix.'Controller';
+			$class = $this->path_class_prefix.'Controller';
 			$result = $this->cp->file_load($file, $this->inject);
 			#+ ensure it is not re-loaded if it is a class {
 			if(class_exists($class, false)){
@@ -124,78 +160,82 @@ class Flow{
 			if($result instanceof \Closure){
 				$result = $this->cp->di_call_with($result, $this->inject);
 			}
-			$this->handle_return($result);
 
-			if(!$this->stop){ # possibly within the class file is a stop call
-				if(class_exists($class, false)){
-					$Controller = $this->cp->di_call_with($class, $this->inject);
+			if(class_exists($class, false)){
+				$Controller = $this->cp->di_call_with($class, $this->inject);
 
-					$this->controllers[] = $Controller;# provide access for deeper controllers
+				$this->controllers[$this->current_relative_path] = $Controller;# provide access for deeper controllers
 
-					if(method_exists($Controller, '_always')){
-						$result = $this->cp->di_call_with([$Controller, '_always'], $this->inject);
-						$this->handle_return($result);
-					}
+				if(method_exists($Controller, '_always')){
+					$result = $this->cp->di_call_with([$Controller, '_always'], $this->inject);
+					return $this->handle_return($result);
 				}
-			}
-
-		}
-		#+ }
-
-		if(!$this->tokens_unparsed){ # this was the last token, resolve page control
-			$page_loaded = false;
-			#+ load page method if present {
-			if(!$this->stop && $Controller){
-				if(method_exists($Controller, $conformed_token)){
-					/**
-					avoid the case of someone attempting to go to a path ending in _always to
-					re-call the _always method of the section, or to a path that should be hidden.
-					*/
-					if($conformed_token == '_always' || substr($conformed_token, 0,2) == '__'){
-						throw new ControlPath\NotFound($this->current_path.$conformed_token);
-					}
-					$result = $this->cp->di_call_with([$Controller, $conformed_token], $this->inject);
-					$this->handle_return($result);
-					$page_loaded = true;
-				}
-
-			}
-			#+ }
-			#+ load page Controller if present {
-			if(!$this->stop){
-				$file = $this->token_current.$this->cp->extension;
-				$file = $this->current_path.$file;
-				if(is_file($file)){
-					$result = $this->cp->file_load($file, $this->inject);
-
-					#+ ensure it is not re-loaded if it is a class {
-					if(class_exists($page_class, false)){
-						$this->cp::$class_files[$file] = true;
-					}
-					#+ }
-
-					if($result instanceof \Closure){
-						$result = $this->cp->di_call_with($result, $this->inject);
-					}
-					$this->handle_return($result);
-					if(!$this->stop && class_exists($page_class, false)){
-						$Controller = $this->cp->di_call_with($page_class, $this->inject);
-						if(method_exists($Controller, '_always')){
-							$result = $this->cp->di_call_with([$Controller, '_always'], $this->inject);
-							$this->handle_return($result);
-						}
-					}
-					$page_loaded = true;
-				}
-			}
-		#+ }
-			if(!$page_loaded && !$this->stop){
-				throw new NotFound($this->current_path.$conformed_token);
+			}else{
+				return $this->handle_return($result);
 			}
 		}
-
-		$return = $this->returns[$this->current_path];
+		return true; # there may be no section controller, but this doesn't mean stop the flow
+		#+ }
+	}
+	public function page(){
+		if($this->stage !== self::STAGE_PAGE){
+			return false;
+		}
+		$return = $this->page_load();
 		$this->forward();
 		return $return;
+	}
+	protected function page_load(){
+		$conformed_token = $this->cp->token_to_class($this->current_token);
+		if(!$conformed_token){
+			return false;
+		}
+		$page_class = $this->path_class_prefix.$conformed_token;
+
+
+		#+ load page method if present {
+		if(isset($this->controllers[$this->current_relative_path])){
+			$Controller = $this->controllers[$this->current_relative_path];
+			if(method_exists($Controller, $conformed_token)){
+				/**
+				avoid the case of someone attempting to go to a path ending in _always to
+				re-call the _always method of the section, or to a path that should be hidden.
+				*/
+				if($conformed_token == '_always' || substr($conformed_token, 0,2) == '__'){
+					throw new ControlPath\NotFound($this->current_path.$conformed_token);
+				}
+				$result = $this->cp->di_call_with([$Controller, $conformed_token], $this->inject);
+				return $this->handle_return($result);
+			}
+
+		}
+		#+ }
+		#+ load page Controller if present {
+		$file = $this->current_token.$this->cp->extension;
+		$file = $this->current_path.$file;
+		if(is_file($file)){
+			$result = $this->cp->file_load($file, $this->inject);
+
+			#+ ensure it is not re-loaded if it is a class {
+			if(class_exists($page_class, false)){
+				$this->cp::$class_files[$file] = true;
+			}
+			#+ }
+
+			if($result instanceof \Closure){
+				$result = $this->cp->di_call_with($result, $this->inject);
+			}
+			if(!$this->stop && class_exists($page_class, false)){
+				$Controller = $this->cp->di_call_with($page_class, $this->inject);
+				if(method_exists($Controller, '_always')){
+					$result = $this->cp->di_call_with([$Controller, '_always'], $this->inject);
+					return $this->handle_return($result);
+				}
+			}else{
+				return $this->handle_return($result);
+			}
+		}
+	#+ }
+		throw new NotFound($this->current_path.$conformed_token);
 	}
 }
